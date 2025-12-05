@@ -19,6 +19,15 @@ A production-grade, self-correcting Text-to-SQL system built with **LangGraph** 
 - **Tool Decorators**: All nodes decorated with @tool for LangChain integration
 
 ## Architecture
+utput in the following format:
+
+1. **Chain-of-Thought Reasoning** (collapsible)
+   - LLM's step-by-step reasoning process
+   - Helps understand query construction
+
+2. **Generated SQL Query** (syntax highlighted)
+   - Complete SQL with LIMIT enforcement
+   - Validated for safety and correctness
 
 ### System Workflow
 

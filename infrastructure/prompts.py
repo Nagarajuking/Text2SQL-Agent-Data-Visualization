@@ -7,11 +7,13 @@ This module contains:
 - Few-shot examples for SQLite syntax
 - Error reflection prompts
 - Visualization recommendation prompts
+- Specialized prompts for SQLCoder
 
 Production-grade features:
 - Comprehensive few-shot examples
 - SQLite-specific syntax guidance
 - Chain-of-Thought reasoning enforcement
+- Model-specific prompt formatting
 """
 
 # Intent Router Prompt
@@ -218,6 +220,36 @@ def get_sql_generator_prompt(question: str, schema: str, sample_data: str) -> st
         schema=schema,
         sample_data=sample_data
     )
+
+
+def get_sqlcoder_prompt(question: str, schema: str) -> str:
+    """
+    Generate prompt specifically formatted for Defog's SQLCoder models.
+    
+    Format:
+    ### Task
+    Generate a SQL query to answer [QUESTION]
+    
+    ### Database Schema
+    The query will run on a database with the following schema:
+    [SCHEMA]
+    
+    ### Answer
+    Given the database schema, here is the SQL query that [QUESTION]
+    [SQL]
+    """
+    return f"""### Task
+Generate a SQL query to answer the following question:
+{question}
+
+### Database Schema
+The query will run on a database with the following schema:
+{schema}
+
+### Answer
+Given the database schema, here is the SQL query that answers the question "{question}":
+```sql
+"""
 
 
 def get_error_reflection_prompt(

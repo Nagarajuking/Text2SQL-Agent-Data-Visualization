@@ -35,7 +35,8 @@ from infrastructure.prompts import (
     get_intent_router_prompt,
     get_sql_generator_prompt,
     get_error_reflection_prompt,
-    get_visualization_prompt
+    get_visualization_prompt,
+    get_sqlcoder_prompt
 )
 from infrastructure.db_manager import DatabaseManager
 from infrastructure.config import get_config
@@ -43,7 +44,6 @@ from infrastructure.config import get_config
 
 # Initialize database manager
 db_manager = DatabaseManager()
-
 
 
 async def intent_router_node(state: AgentState) -> Dict[str, Any]:
@@ -92,13 +92,12 @@ async def intent_router_node(state: AgentState) -> Dict[str, Any]:
         }
 
 
-
 async def sql_generator_node(state: AgentState) -> Dict[str, Any]:
     """
     Node 2: SQL Generator
     
-    Generates SQL query with Chain-of-Thought reasoning.
-    Uses a powerful model (Gemini Pro) for complex SQL generation.
+    Generates SQL query based on user question and schema.
+    Supports hybrid architecture: Gemini or SQLCoder.
     
     Args:
         state: Current agent state
@@ -108,15 +107,60 @@ async def sql_generator_node(state: AgentState) -> Dict[str, Any]:
     """
     question = state.question if isinstance(state, AgentState) else state["question"]
     
-    # Get database context
+    # Get schema and sample data
     schema = db_manager.get_annotated_schema()
     sample_data = db_manager.get_sample_data()
     
-    # Get SQL generator LLM
-    llm = get_sql_generator_llm()
+    # Get configuration
+    config = get_config()
     
-    # Generate prompt
+    if config.use_open_source:
+        # --- SQLCoder Path with Fallback ---
+        try:
+            print("[INFO] Attempting to use SQLCoder-7b-2...")
+            prompt = get_sqlcoder_prompt(question, schema)
+            llm = get_sql_generator_llm()
+            
+            # Call Hugging Face Endpoint with timeout protection
+            # Note: LangChain's ainvoke doesn't support timeout directly in all versions, 
+            # but we wrap the whole call in a try/except block.
+            response = await llm.ainvoke(prompt)
+            
+            # Extract SQL from response (SQLCoder might return markdown)
+            sql_query = response.strip()
+            if "```sql" in sql_query:
+                sql_query = sql_query.split("```sql")[1].split("```")[0].strip()
+            elif "```" in sql_query:
+                sql_query = sql_query.split("```")[1].strip()
+                
+            # SQLCoder doesn't provide reasoning in the same way
+            reasoning = "Generated using specialized SQLCoder-7b-2 model."
+            
+            return {
+                "sql_query": sql_query,
+                "reasoning": reasoning,
+                "validation_passed": False,
+                "validation_error": ""
+            }
+            
+        except Exception as e:
+            print(f"[WARNING] SQLCoder failed: {e}. Falling back to Gemini Pro...")
+            # Fallback will proceed to the Gemini block below
+            pass
+            
+    # --- Gemini Path (Default or Fallback) ---
     prompt = get_sql_generator_prompt(question, schema, sample_data)
+    # Force get Gemini model even if configured for Open Source (for fallback)
+    # We create a temporary config override or just instantiate directly
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    
+    # If we fell back, we need to ensure we use Gemini
+    llm = ChatGoogleGenerativeAI(
+        model=config.sql_generator_model,
+        google_api_key=config.google_api_key,
+        temperature=config.temperature,
+        convert_system_message_to_human=True,
+    )
     
     try:
         # Invoke LLM asynchronously
@@ -151,7 +195,6 @@ async def sql_generator_node(state: AgentState) -> Dict[str, Any]:
         }
 
 
-
 def sql_validator_node(state: AgentState) -> Dict[str, Any]:
     """
     Node 3: SQL Validator
@@ -172,19 +215,19 @@ def sql_validator_node(state: AgentState) -> Dict[str, Any]:
     
     # Safety check: Block dangerous SQL operations
     dangerous_keywords = [
-        r'\bDROP\b',
-        r'\bDELETE\b',
-        r'\bUPDATE\b',
-        r'\bINSERT\b',
-        r'\bALTER\b',
-        r'\bTRUNCATE\b',
-        r'\bCREATE\b',
-        r'\bREPLACE\b'
+        r'\\bDROP\\b',
+        r'\\bDELETE\\b',
+        r'\\bUPDATE\\b',
+        r'\\bINSERT\\b',
+        r'\\bALTER\\b',
+        r'\\bTRUNCATE\\b',
+        r'\\bCREATE\\b',
+        r'\\bREPLACE\\b'
     ]
     
     for keyword_pattern in dangerous_keywords:
         if re.search(keyword_pattern, sql_query, re.IGNORECASE):
-            keyword = keyword_pattern.replace(r'\b', '').replace('\\', '')
+            keyword = keyword_pattern.replace(r'\\b', '').replace('\\\\', '')
             return {
                 "validation_passed": False,
                 "validation_error": (
@@ -198,7 +241,7 @@ def sql_validator_node(state: AgentState) -> Dict[str, Any]:
     
     # Extract table names from query (simple pattern matching)
     # This catches FROM and JOIN clauses
-    table_pattern = r'\b(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+    table_pattern = r'\\b(?:FROM|JOIN)\\s+([a-zA-Z_][a-zA-Z0-9_]*)'
     referenced_tables = set(re.findall(table_pattern, sql_query, re.IGNORECASE))
     
     invalid_tables = referenced_tables - valid_tables
@@ -221,7 +264,7 @@ def sql_validator_node(state: AgentState) -> Dict[str, Any]:
     
     # LIMIT enforcement: Add LIMIT if not present
     config = get_config()
-    if not re.search(r'\bLIMIT\s+\d+', sql_query, re.IGNORECASE):
+    if not re.search(r'\\bLIMIT\\s+\\d+', sql_query, re.IGNORECASE):
         sql_query = sql_query.rstrip(';')
         sql_query = f"{sql_query} LIMIT {config.max_result_rows};"
     
@@ -231,7 +274,6 @@ def sql_validator_node(state: AgentState) -> Dict[str, Any]:
         "validation_passed": True,
         "validation_error": ""
     }
-
 
 
 def executor_node(state: AgentState) -> Dict[str, Any]:
@@ -261,7 +303,6 @@ def executor_node(state: AgentState) -> Dict[str, Any]:
             "query_result": results,
             "error": ""
         }
-
 
 
 async def reflector_node(state: AgentState) -> Dict[str, Any]:
@@ -342,7 +383,6 @@ async def reflector_node(state: AgentState) -> Dict[str, Any]:
         }
 
 
-
 async def visualizer_node(state: AgentState) -> Dict[str, Any]:
     """
     Node 6: Visualizer
@@ -356,23 +396,27 @@ async def visualizer_node(state: AgentState) -> Dict[str, Any]:
         Dict with updated state fields
     """
     question = state.question if isinstance(state, AgentState) else state["question"]
-    results = state.query_result if isinstance(state, AgentState) else state["query_result"]
+    query_result = state.query_result if isinstance(state, AgentState) else state["query_result"]
     
-    # If no results, no visualization needed
-    if not results:
+    # If no results, skip visualization
+    if not query_result:
         return {
             "visualization_spec": None,
-            "final_response": "Query executed successfully but returned no results."
+            "final_response": "I found no data answering your question."
         }
     
-    # Get column names and row count
-    columns = list(results[0].keys()) if results else []
-    row_count = len(results)
+    # Get columns and row count
+    if len(query_result) > 0:
+        columns = list(query_result[0].keys())
+        row_count = len(query_result)
+    else:
+        columns = []
+        row_count = 0
     
     # Get visualizer LLM
     llm = get_visualizer_llm()
     
-    # Generate visualization prompt
+    # Generate prompt
     prompt = get_visualization_prompt(question, columns, row_count)
     
     try:
@@ -380,30 +424,36 @@ async def visualizer_node(state: AgentState) -> Dict[str, Any]:
         response = await llm.ainvoke(prompt)
         response_text = response.content.strip()
         
-        # Extract JSON from response
-        json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-        if json_match:
-            viz_spec = json.loads(json_match.group(0))
+        # Parse JSON response
+        # Clean up potential markdown code blocks
+        if "```json" in response_text:
+            json_str = response_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in response_text:
+            json_str = response_text.split("```")[1].strip()
         else:
-            # Default to table if no JSON found
-            viz_spec = {"chart_type": "table"}
+            json_str = response_text
+            
+        viz_spec = json.loads(json_str)
         
         return {
-            "visualization_spec": viz_spec
+            "visualization_spec": viz_spec,
+            "final_response": f"Here are the results for '{question}'."
         }
         
     except Exception as e:
-        # On error, default to table visualization
-        print(f"[WARNING] Visualization recommendation failed: {e}")
+        print(f"[WARNING] Visualization error: {e}")
         return {
-            "visualization_spec": {"chart_type": "table"}
+            "visualization_spec": {"chart_type": "table"},
+            "final_response": f"Here are the results for '{question}'."
         }
 
 
-
-def format_response_node(state: AgentState) -> Dict[str, Any]:
+async def format_response_node(state: AgentState) -> Dict[str, Any]:
     """
-    Final node: Format the response for the user with helpful error messages.
+    Node 7: Format Response
+    
+    Formats the final response to the user.
+    Uses simple logic rather than LLM to reduce latency.
     
     Args:
         state: Current agent state
@@ -411,118 +461,45 @@ def format_response_node(state: AgentState) -> Dict[str, Any]:
     Returns:
         Dict with updated state fields
     """
-    # Extract state values (handle both dict and Pydantic)
-    if isinstance(state, AgentState):
-        is_relevant = state.is_relevant
-        error = state.error
-        validation_error = state.validation_error
-        final_response = state.final_response
-        results = state.query_result
-    else:
-        is_relevant = state.get("is_relevant", False)
-        error = state.get("error", "")
-        validation_error = state.get("validation_error", "")
-        final_response = state.get("final_response", "")
-        results = state.get("query_result", [])
-    
-    # If we already have a final response, use it
-    if final_response:
-        return {}
-    
-    # Not relevant to database
-    if not is_relevant:
+    # Check for errors
+    error = state.error or state.validation_error
+    if error:
+        # Categorize error for better UX
+        if "syntax error" in str(error).lower():
+            error_type = "SQL Syntax Error"
+            suggestion = "Try: Simplify your question or be more specific"
+        elif "no such table" in str(error).lower() or "no such column" in str(error).lower():
+            error_type = "Database Schema Error"
+            suggestion = "Try: Ask about artists, albums, tracks, or invoices"
+        elif "forbidden keyword" in str(error).lower():
+            error_type = "Security Validation"
+            suggestion = "Note: Only read-only queries are allowed"
+        else:
+            error_type = "Processing Error"
+            suggestion = "Try: Rephrase your question"
+            
         return {
             "final_response": (
-                "This question doesn't appear to be related to the music store database.\n\n"
-                "I can help you with questions about:\n"
-                "- Artists, Albums, Tracks, and Genres\n"
-                "- Customers and Employees\n"
-                "- Invoices and Sales data\n"
-                "- Playlists and Media types\n\n"
-                "Please try asking a question about these topics."
+                f"**{error_type}**\n\n"
+                f"I couldn't generate a valid answer after {state.retry_count} attempts.\n\n"
+                f"**Error Details:**\n{error}\n\n"
+                f"**Suggestion:**\n{suggestion}"
             )
         }
     
-    # Has error - provide helpful, categorized error messages
-    if error or validation_error:
-        error_msg = error or validation_error
-        error_lower = error_msg.lower()
-        
-        # Categorize and provide helpful guidance
-        if "syntax error" in error_lower or "near" in error_lower:
-            return {
-                "final_response": (
-                    f"SQL Syntax Error\n\n"
-                    f"The generated query has a syntax problem:\n{error_msg}\n\n"
-                    f"This might be due to:\n"
-                    f"• Complex question requiring rephrasing\n"
-                    f"• Ambiguous column or table references\n\n"
-                    f"Try: Simplify your question or be more specific about what you're looking for."
-                )
-            }
-        
-        elif "no such table" in error_lower or "no such column" in error_lower:
-            return {
-                "final_response": (
-                    f"Database Schema Error\n\n"
-                    f"Referenced table or column doesn't exist:\n{error_msg}\n\n"
-                    f"Available tables: Artist, Album, Track, Genre, Customer, Employee, "
-                    f"Invoice, InvoiceLine, Playlist, PlaylistTrack, MediaType\n\n"
-                    f"Try: Rephrase your question using these table names."
-                )
-            }
-        
-        elif "dangerous" in error_lower or "not allowed" in error_lower:
-            return {
-                "final_response": (
-                    f"Security Validation Failed\n\n"
-                    f"The query contains unsafe operations:\n{error_msg}\n\n"
-                    f"This system only supports read-only SELECT queries for data safety.\n"
-                    f"Operations like INSERT, UPDATE, DELETE, and DROP are not allowed."
-                )
-            }
-        
-        elif "max retries" in error_lower or "retry" in error_lower:
-            return {
-                "final_response": (
-                    f"Query Generation Failed\n\n"
-                    f"Unable to generate a valid query after multiple attempts.\n"
-                    f"Last error: {error_msg}\n\n"
-                    f"This question might be too complex or ambiguous.\n\n"
-                    f"Try:\n"
-                    f"• Breaking it into simpler questions\n"
-                    f"• Being more specific about what data you want\n"
-                    f"• Using simpler language\n"
-                    f"• Checking the example questions in the sidebar"
-                )
-            }
-        
-        else:
-            # Generic error with helpful context
-            return {
-                "final_response": (
-                    f"An error occurred while processing your question.\n\n"
-                    f"Error: {error_msg}\n\n"
-                    f"Please try:\n"
-                    f"• Rephrasing your question\n"
-                    f"• Asking a simpler question\n"
-                    f"• Checking the example questions in the sidebar"
-                )
-            }
+    # Check for empty results
+    if not state.query_result:
+        return {
+            "final_response": (
+                "I executed the query successfully, but found no matching data.\n"
+                "Try broadening your search criteria."
+            )
+        }
     
-    # Success - format based on result count
-    row_count = len(results)
-    
-    if row_count == 0:
-        return {
-            "final_response": "Query executed successfully, but no matching data was found."
-        }
-    elif row_count == 1:
-        return {
-            "final_response": "Found 1 matching result."
-        }
-    else:
-        return {
-            "final_response": f"Found {row_count} matching results."
-        }
-
+    # Success case
+    row_count = len(state.query_result)
+    return {
+        "final_response": (
+            f"Found {row_count} result{'s' if row_count != 1 else ''} for your question."
+        )
+    }

@@ -13,8 +13,10 @@ Production-grade features:
 - Support for multiple model types (router, generator, reflector)
 """
 
-from typing import Optional, Dict
+import os
+from typing import Optional, Any, Dict
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_huggingface import HuggingFaceEndpoint
 from langchain_core.language_models import BaseChatModel
 
 from infrastructure.config import get_config
@@ -28,7 +30,7 @@ class LLMManager:
     Provides different models for different tasks (routing, generation, reflection).
     """
     
-    _instances: Dict[str, BaseChatModel] = {}
+    _instances: Dict[str, Any] = {}
     
     @classmethod
     def get_router_model(cls) -> BaseChatModel:
@@ -51,24 +53,48 @@ class LLMManager:
         return cls._instances["router"]
     
     @classmethod
-    def get_sql_generator_model(cls) -> BaseChatModel:
+    def get_huggingface_model(cls) -> HuggingFaceEndpoint:
+        """
+        Get the Hugging Face model for SQL generation.
+        
+        Returns:
+            HuggingFaceEndpoint: Configured HF model instance
+        """
+        config = get_config()
+        return HuggingFaceEndpoint(
+            repo_id=config.huggingface_model_repo,
+            huggingfacehub_api_token=config.huggingface_api_token,
+            temperature=0.1,
+            max_new_tokens=512,
+            task="text-generation"
+        )
+    
+    @classmethod
+    def get_sql_generator_model(cls) -> Any:
         """
         Get the SQL generation model.
         
-        Uses a more powerful model (Gemini Pro) for complex SQL generation
-        with chain-of-thought reasoning.
+        Supports hybrid architecture:
+        - Gemini Pro (default)
+        - SQLCoder (if USE_OPEN_SOURCE is True)
         
         Returns:
-            BaseChatModel: Initialized SQL generator model
+            LLM instance (Gemini or HuggingFace)
         """
         if "sql_generator" not in cls._instances:
             config = get_config()
-            cls._instances["sql_generator"] = ChatGoogleGenerativeAI(
-                model=config.sql_generator_model,
-                google_api_key=config.google_api_key,
-                temperature=config.temperature,
-                convert_system_message_to_human=True,
-            )
+            
+            if config.use_open_source:
+                # Use specialized SQLCoder model
+                cls._instances["sql_generator"] = cls.get_huggingface_model()
+            else:
+                # Use Gemini Pro
+                cls._instances["sql_generator"] = ChatGoogleGenerativeAI(
+                    model=config.sql_generator_model,
+                    google_api_key=config.google_api_key,
+                    temperature=config.temperature,
+                    convert_system_message_to_human=True,
+                )
         return cls._instances["sql_generator"]
     
     @classmethod
@@ -119,7 +145,7 @@ def get_router_llm() -> BaseChatModel:
     return LLMManager.get_router_model()
 
 
-def get_sql_generator_llm() -> BaseChatModel:
+def get_sql_generator_llm() -> Any:
     """Get SQL generator LLM instance."""
     return LLMManager.get_sql_generator_model()
 

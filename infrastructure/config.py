@@ -59,6 +59,17 @@ class Config(BaseModel):
         description="Whether to use open-source models instead of Gemini"
     )
     
+    # Hugging Face Configuration
+    huggingface_api_token: str = Field(
+        default_factory=lambda: os.getenv("HUGGINGFACE_API_TOKEN", ""),
+        description="Hugging Face API token for open-source models"
+    )
+    
+    huggingface_model_repo: str = Field(
+        default_factory=lambda: os.getenv("HUGGINGFACE_MODEL_REPO", "defog/sqlcoder-7b-2"),
+        description="Hugging Face model repository ID"
+    )
+    
     # Database Configuration
     database_path: Path = Field(
         default_factory=lambda: Path(os.getenv("DATABASE_PATH", "chinook.db")),
@@ -100,6 +111,20 @@ class Config(BaseModel):
                     "GOOGLE_API_KEY is required. Please set it in your .env file. "
                     "Get your API key from: https://makersuite.google.com/app/apikey"
                 )
+        return v
+    
+    @field_validator("huggingface_api_token")
+    @classmethod
+    def validate_hf_token(cls, v: str, info) -> str:
+        """Validate that HF token is provided when using open-source models."""
+        use_open_source = os.getenv("USE_OPEN_SOURCE", "False").lower() == "true"
+        
+        if use_open_source and (not v or v == "your_hf_token_here"):
+            raise ValueError(
+                "HUGGINGFACE_API_TOKEN is required when USE_OPEN_SOURCE is True. "
+                "Please set it in your .env file. "
+                "Get your token from: https://huggingface.co/settings/tokens"
+            )
         return v
     
     @field_validator("database_path")
