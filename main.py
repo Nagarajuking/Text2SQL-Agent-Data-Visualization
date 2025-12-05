@@ -26,7 +26,18 @@ import plotly.graph_objects as go
 from typing import Dict, Any, List
 
 from agents.graph import run_agent
-from core.config import get_config
+from infrastructure.config import get_config
+from infrastructure.validators import InputValidator, QueryResultValidator
+from infrastructure.langsmith_config import setup_langsmith
+
+
+# Initialize validators
+input_validator = InputValidator()
+result_validator = QueryResultValidator()
+
+# Setup LangSmith tracing for observability
+setup_langsmith(project_name="text2sql-production", enabled=True)
+
 
 
 # Page configuration
@@ -301,17 +312,33 @@ def main():
         st.write("")  # Spacing
         submit = st.button("Generate SQL", use_container_width=True)
     
-    # Process query
+    # Handle form submission
     if submit and question:
-        with st.spinner("Analyzing your question..."):
-            try:
-                # Run agent
-                result_state = run_agent(question)
-                st.session_state.results = result_state
-                
-            except Exception as e:
-                st.error(f"ERROR: An error occurred: {str(e)}")
-                st.session_state.results = None
+        # Validate and sanitize input
+        is_valid, sanitized_question, error_msg = input_validator.validate_question(question)
+        
+        if not is_valid:
+            st.error(f"Invalid input: {error_msg}")
+            st.session_state.results = None
+        else:
+            # Run agent with sanitized question
+            with st.spinner("Analyzing your question..."):
+                try:
+                    result_state = run_agent(sanitized_question)
+                    
+                    # Validate results before storing
+                    if result_state.query_result:
+                        is_valid_results, validation_error = result_validator.validate_results(result_state.query_result)
+                        if not is_valid_results:
+                            st.error(f"Result validation failed: {validation_error}")
+                            st.session_state.results = None
+                            return
+                    
+                    st.session_state.results = result_state
+                    
+                except Exception as e:
+                    st.error(f"ERROR: An error occurred: {str(e)}")
+                    st.session_state.results = None
     
     # Display results
     if st.session_state.results:
@@ -323,7 +350,7 @@ def main():
             return
         
         # Check for errors
-        if state.final_response and ("Error" in state.final_response or "apologize" in state.final_response):
+        if state.final_response and ("Error" in state.final_response or "Failed" in state.final_response):
             st.error("ERROR: " + state.final_response)
             
             # Show failed SQL if available
@@ -358,6 +385,7 @@ def main():
             st.caption(f"Showing {row_count} row(s)")
         else:
             st.info("Query executed successfully but returned no results.")
+
 
 
 if __name__ == "__main__":

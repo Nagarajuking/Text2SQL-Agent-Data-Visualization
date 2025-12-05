@@ -17,7 +17,7 @@ from typing import Optional, Dict
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.language_models import BaseChatModel
 
-from core.config import get_config
+from infrastructure.config import get_config
 
 
 class LLMManager:

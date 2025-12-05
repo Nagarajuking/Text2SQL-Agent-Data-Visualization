@@ -25,20 +25,20 @@ from typing import Dict, Any
 
 
 from agents.state import AgentState
-from core.llm import (
+from infrastructure.llm import (
     get_router_llm,
     get_sql_generator_llm,
     get_reflector_llm,
     get_visualizer_llm
 )
-from core.prompts import (
+from infrastructure.prompts import (
     get_intent_router_prompt,
     get_sql_generator_prompt,
     get_error_reflection_prompt,
     get_visualization_prompt
 )
-from core.db_manager import DatabaseManager
-from core.config import get_config
+from infrastructure.db_manager import DatabaseManager
+from infrastructure.config import get_config
 
 
 # Initialize database manager
@@ -403,7 +403,7 @@ async def visualizer_node(state: AgentState) -> Dict[str, Any]:
 
 def format_response_node(state: AgentState) -> Dict[str, Any]:
     """
-    Final node: Format the response for the user.
+    Final node: Format the response for the user with helpful error messages.
     
     Args:
         state: Current agent state
@@ -411,21 +411,118 @@ def format_response_node(state: AgentState) -> Dict[str, Any]:
     Returns:
         Dict with updated state fields
     """
-    # If we already have a final response (from error handling), use it
+    # Extract state values (handle both dict and Pydantic)
     if isinstance(state, AgentState):
-        if state.final_response:
-            return {}
+        is_relevant = state.is_relevant
+        error = state.error
+        validation_error = state.validation_error
+        final_response = state.final_response
         results = state.query_result
     else:
-        if state.get("final_response"):
-            return {}
-        results = state["query_result"]
+        is_relevant = state.get("is_relevant", False)
+        error = state.get("error", "")
+        validation_error = state.get("validation_error", "")
+        final_response = state.get("final_response", "")
+        results = state.get("query_result", [])
     
+    # If we already have a final response, use it
+    if final_response:
+        return {}
+    
+    # Not relevant to database
+    if not is_relevant:
+        return {
+            "final_response": (
+                "This question doesn't appear to be related to the music store database.\n\n"
+                "I can help you with questions about:\n"
+                "- Artists, Albums, Tracks, and Genres\n"
+                "- Customers and Employees\n"
+                "- Invoices and Sales data\n"
+                "- Playlists and Media types\n\n"
+                "Please try asking a question about these topics."
+            )
+        }
+    
+    # Has error - provide helpful, categorized error messages
+    if error or validation_error:
+        error_msg = error or validation_error
+        error_lower = error_msg.lower()
+        
+        # Categorize and provide helpful guidance
+        if "syntax error" in error_lower or "near" in error_lower:
+            return {
+                "final_response": (
+                    f"SQL Syntax Error\n\n"
+                    f"The generated query has a syntax problem:\n{error_msg}\n\n"
+                    f"This might be due to:\n"
+                    f"• Complex question requiring rephrasing\n"
+                    f"• Ambiguous column or table references\n\n"
+                    f"Try: Simplify your question or be more specific about what you're looking for."
+                )
+            }
+        
+        elif "no such table" in error_lower or "no such column" in error_lower:
+            return {
+                "final_response": (
+                    f"Database Schema Error\n\n"
+                    f"Referenced table or column doesn't exist:\n{error_msg}\n\n"
+                    f"Available tables: Artist, Album, Track, Genre, Customer, Employee, "
+                    f"Invoice, InvoiceLine, Playlist, PlaylistTrack, MediaType\n\n"
+                    f"Try: Rephrase your question using these table names."
+                )
+            }
+        
+        elif "dangerous" in error_lower or "not allowed" in error_lower:
+            return {
+                "final_response": (
+                    f"Security Validation Failed\n\n"
+                    f"The query contains unsafe operations:\n{error_msg}\n\n"
+                    f"This system only supports read-only SELECT queries for data safety.\n"
+                    f"Operations like INSERT, UPDATE, DELETE, and DROP are not allowed."
+                )
+            }
+        
+        elif "max retries" in error_lower or "retry" in error_lower:
+            return {
+                "final_response": (
+                    f"Query Generation Failed\n\n"
+                    f"Unable to generate a valid query after multiple attempts.\n"
+                    f"Last error: {error_msg}\n\n"
+                    f"This question might be too complex or ambiguous.\n\n"
+                    f"Try:\n"
+                    f"• Breaking it into simpler questions\n"
+                    f"• Being more specific about what data you want\n"
+                    f"• Using simpler language\n"
+                    f"• Checking the example questions in the sidebar"
+                )
+            }
+        
+        else:
+            # Generic error with helpful context
+            return {
+                "final_response": (
+                    f"An error occurred while processing your question.\n\n"
+                    f"Error: {error_msg}\n\n"
+                    f"Please try:\n"
+                    f"• Rephrasing your question\n"
+                    f"• Asking a simpler question\n"
+                    f"• Checking the example questions in the sidebar"
+                )
+            }
+    
+    # Success - format based on result count
     row_count = len(results)
     
-    # Format success message
-    final_response = f"Query executed successfully! Found {row_count} result(s)."
-    
-    return {
-        "final_response": final_response
-    }
+    if row_count == 0:
+        return {
+            "final_response": "Query executed successfully, but no matching data was found."
+        }
+    elif row_count == 1:
+        return {
+            "final_response": "Found 1 matching result."
+        }
+    else:
+        return {
+            "final_response": f"Found {row_count} matching results."
+        }
+

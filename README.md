@@ -181,7 +181,7 @@ Text2SQL/
 ├── requirements.txt        # Python dependencies
 ├── .env.example           # Environment configuration template
 ├── chinook.db             # SQLite database (Chinook music store)
-├── core/                  # Core infrastructure
+├── infrastructure/                  # Core infrastructure
 │   ├── config.py          # Configuration with Pydantic validation
 │   ├── llm.py             # LLM initialization (singleton pattern)
 │   ├── prompts.py         # System prompts + few-shot examples

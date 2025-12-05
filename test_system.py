@@ -22,7 +22,7 @@ def test_configuration():
     """Test configuration loading."""
     print("[TEST] Configuration...")
     try:
-        from core.config import get_config
+        from infrastructure.config import get_config
         config = get_config()
         print(f"   [PASS] Config loaded successfully")
         print(f"   - SQL Generator: {config.sql_generator_model}")
@@ -38,7 +38,7 @@ def test_database():
     """Test database connectivity."""
     print("\n[TEST] Database...")
     try:
-        from core.db_manager import DatabaseManager
+        from infrastructure.db_manager import DatabaseManager
         db = DatabaseManager()
         
         # Test schema retrieval
@@ -68,7 +68,7 @@ def test_llm():
     """Test LLM initialization."""
     print("\n[TEST] LLM Initialization...")
     try:
-        from core.llm import get_router_llm, get_sql_generator_llm
+        from infrastructure.llm import get_router_llm, get_sql_generator_llm
         
         # Test router LLM
         router_llm = get_router_llm()

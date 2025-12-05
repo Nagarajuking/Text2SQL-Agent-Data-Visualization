@@ -21,7 +21,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 from contextlib import contextmanager
 
-from core.config import get_config
+from infrastructure.config import get_config
 
 
 # Semantic annotations for Chinook database
